@@ -24,7 +24,7 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install sdkmanager packages
+      - name: Install SDK packages
         run: sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2"
 
       - name: Install dependencies
@@ -41,11 +41,17 @@ jobs:
           npx cap add android
           npx cap sync android
 
+      - name: Fix Gradle JVM args
+        run: |
+          echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=512m" >> android/gradle.properties
+          echo "org.gradle.daemon=false" >> android/gradle.properties
+          echo "org.gradle.caching=false" >> android/gradle.properties
+
       - name: Build debug APK
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug --no-daemon --no-build-cache --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
