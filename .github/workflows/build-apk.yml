@@ -45,7 +45,6 @@ jobs:
         run: |
           sed -i 's|gradle-7.*-all|gradle-8.7-all|g' android/gradle/wrapper/gradle-wrapper.properties
           sed -i 's|gradle-8.*-all|gradle-8.7-all|g' android/gradle/wrapper/gradle-wrapper.properties
-          cat android/gradle/wrapper/gradle-wrapper.properties
 
       - name: Fix Gradle JVM args
         run: |
@@ -53,15 +52,37 @@ jobs:
           echo "org.gradle.daemon=false" >> android/gradle.properties
           echo "org.gradle.caching=false" >> android/gradle.properties
 
-      - name: Build debug APK
+      - name: Generate signing keystore
+        run: |
+          keytool -genkey -v \
+            -keystore release.jks \
+            -alias budget-release \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass HadrShot2024 \
+            -keypass HadrShot2024 \
+            -dname "CN=Budget App, O=HadrShot, L=Israel, C=IL"
+
+      - name: Build release APK (unsigned)
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --no-build-cache
+          ./gradlew assembleRelease --no-daemon --no-build-cache
 
-      - name: Upload APK
+      - name: Sign APK with apksigner
+        run: |
+          $ANDROID_HOME/build-tools/34.0.0/apksigner sign \
+            --ks release.jks \
+            --ks-pass pass:HadrShot2024 \
+            --key-pass pass:HadrShot2024 \
+            --ks-key-alias budget-release \
+            --out budget-app-signed.apk \
+            android/app/build/outputs/apk/release/app-release-unsigned.apk
+
+      - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
-          name: budget-app-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: budget-app-signed
+          path: budget-app-signed.apk
           retention-days: 30
