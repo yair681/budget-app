@@ -1,0 +1,6 @@
+{
+  "appId": "com.hadrshot.budget",
+  "appName": "ניהול תקציב",
+  "webDir": "dist",
+  "bundledWebRuntime": false
+}
