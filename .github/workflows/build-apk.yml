@@ -18,7 +18,7 @@ jobs:
 
       - uses: actions/setup-java@v4
         with:
-          java-version: '17'
+          java-version: '21'
           distribution: 'temurin'
 
       - name: Setup Android SDK
@@ -41,6 +41,10 @@ jobs:
           npx cap add android
           npx cap sync android
 
+      - name: Upgrade Gradle wrapper to 8.7 (fixes bcprov Java 21 class issue)
+        run: |
+          sed -i 's|gradle-8.2.1-all|gradle-8.7-all|g' android/gradle/wrapper/gradle-wrapper.properties
+
       - name: Fix Gradle JVM args
         run: |
           echo "org.gradle.jvmargs=-Xmx4096m -XX:MaxMetaspaceSize=512m" >> android/gradle.properties
@@ -51,7 +55,7 @@ jobs:
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --no-build-cache --stacktrace
+          ./gradlew assembleDebug --no-daemon --no-build-cache
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
