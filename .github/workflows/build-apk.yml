@@ -18,14 +18,14 @@ jobs:
 
       - uses: actions/setup-java@v4
         with:
-          java-version: '21'
+          java-version: '17'
           distribution: 'temurin'
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Install SDK packages
-        run: sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2"
+        run: sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Install dependencies
         run: npm ci
@@ -33,17 +33,19 @@ jobs:
       - name: Build web app
         run: npm run build
 
-      - name: Install Capacitor
-        run: npm install @capacitor/core @capacitor/cli @capacitor/android
+      - name: Install Capacitor 5
+        run: npm install @capacitor/core@5 @capacitor/cli@5 @capacitor/android@5
 
       - name: Add Android platform
         run: |
           npx cap add android
           npx cap sync android
 
-      - name: Upgrade Gradle wrapper to 8.7 (fixes bcprov Java 21 class issue)
+      - name: Upgrade Gradle wrapper to 8.7
         run: |
-          sed -i 's|gradle-8.2.1-all|gradle-8.7-all|g' android/gradle/wrapper/gradle-wrapper.properties
+          sed -i 's|gradle-7.*-all|gradle-8.7-all|g' android/gradle/wrapper/gradle-wrapper.properties
+          sed -i 's|gradle-8.*-all|gradle-8.7-all|g' android/gradle/wrapper/gradle-wrapper.properties
+          cat android/gradle/wrapper/gradle-wrapper.properties
 
       - name: Fix Gradle JVM args
         run: |
