@@ -1,30 +1,24 @@
 import { useState, useEffect, useCallback } from 'react'
 import {
-  Wallet,
-  PiggyBank,
   ShoppingCart,
-  ArrowRightLeft,
+  History,
+  TrendingDown,
+  AlertCircle,
   Plus,
   Trash2,
   X,
-  Check,
-  Receipt,
-  TrendingDown,
-  AlertCircle,
-  History,
-  Pencil,
   ChevronDown,
+  ChevronUp,
+  Check,
+  AlertTriangle,
 } from 'lucide-react'
 
 // ─── Storage ───────────────────────────────────────────────────────────────────
-const STORAGE_KEY = 'hadrshot_budget_v1'
+const STORAGE_KEY = 'supermarket_budget_v2'
 
 const DEFAULT_STATE = {
-  bankBalance: 0,
-  savingsBalance: 0,
-  weeklyBudget: 0,
-  debts: [],
-  expenses: [],
+  trips: [],
+  monthlyBudget: 3000,
 }
 
 function loadState() {
@@ -37,71 +31,130 @@ function loadState() {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+const generateId = () => Date.now().toString(36) + Math.random().toString(36).slice(2)
+
 function fmt(n) {
-  return Number(n).toLocaleString('he-IL')
+  const num = Number(n)
+  if (isNaN(num)) return '0'
+  return num % 1 === 0 ? num.toLocaleString('he-IL') : num.toFixed(2)
 }
 
-function today() {
-  return new Date().toLocaleDateString('he-IL')
+function todayISO() {
+  return new Date().toISOString().slice(0, 10)
 }
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
-
-function BalanceCard({ label, value, gradient, border, icon: Icon, iconBg, onEdit, badge }) {
-  return (
-    <div
-      className={`rounded-2xl p-5 border ${gradient} ${border} cursor-pointer select-none`}
-      onClick={onEdit}
-    >
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <div className={`w-9 h-9 ${iconBg} rounded-xl flex items-center justify-center`}>
-            <Icon className="w-4 h-4 text-white" />
-          </div>
-          <span className="text-sm font-medium opacity-80">{label}</span>
-        </div>
-        <div className="flex items-center gap-1 opacity-60 text-xs">
-          <Pencil className="w-3 h-3" />
-          <span>ערוך</span>
-        </div>
-      </div>
-      <div className="text-4xl font-bold tracking-tight">₪{fmt(value)}</div>
-      {badge && <div className="mt-2 text-xs opacity-60">{badge}</div>}
-    </div>
-  )
+function formatDate(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  return d.toLocaleDateString('he-IL', { day: 'numeric', month: 'numeric', year: 'numeric' })
 }
 
+// ─── Category Logic ───────────────────────────────────────────────────────────
+const BASICS_WORDS = [
+  'חלב','לחם','ביצ','עגב','בצל','גזר','תפוח','אורז','פסטה','קמח','סוכר','מלח','שמן','מים',
+  'חמאה','גבינ','יוגורט','קוטג','שמנת','כרוב','חסה','מלפפ','פלפל','שום','לימון','בננ','תפו"א',
+]
+const LUXURY_WORDS = [
+  'יין','בירה','וויסקי','קוניאק','וודקה','אלכוהול','סושי','נקניק','סלמי','פרושוטו','שמפניה',
+]
+
+function categorize(name) {
+  const lower = (name || '').toLowerCase()
+  for (const w of LUXURY_WORDS) {
+    if (lower.includes(w)) return 'luxury'
+  }
+  for (const w of BASICS_WORDS) {
+    if (lower.includes(w)) return 'basics'
+  }
+  return 'convenience'
+}
+
+const CAT_LABEL = { basics: 'בסיס', convenience: 'נוחות', luxury: 'מותרות' }
+const CAT_COLOR = {
+  basics: 'bg-green-900/60 text-green-400 border-green-800',
+  convenience: 'bg-orange-900/60 text-orange-400 border-orange-800',
+  luxury: 'bg-red-900/60 text-red-400 border-red-800',
+}
+
+// ─── Unit Price Logic ─────────────────────────────────────────────────────────
+function unitPrice(price, qty, unit) {
+  const p = parseFloat(price) || 0
+  const q = parseFloat(qty) || 1
+  if (unit === 'גרם') return (p / q) * 1000
+  if (unit === 'מ"ל') return (p / q) * 1000
+  return p / q
+}
+
+function unitPriceLabel(unit) {
+  if (unit === 'גרם') return 'לק"ג'
+  if (unit === 'מ"ל') return 'לליטר'
+  if (unit === 'ק"ג') return 'לק"ג'
+  if (unit === 'ל') return 'לליטר'
+  return 'ליח\''
+}
+
+// ─── Anomaly Detection ────────────────────────────────────────────────────────
+function detectAnomalies(trips) {
+  // Group all products by normalized name
+  const groups = {}
+  for (const trip of trips) {
+    for (const product of trip.products || []) {
+      const key = (product.name || '').toLowerCase().trim()
+      if (!key) continue
+      if (!groups[key]) groups[key] = []
+      groups[key].push({
+        price: product.price,
+        qty: product.quantity,
+        unit: product.unit,
+        tripDate: trip.date,
+        store: trip.store,
+        productName: product.name,
+      })
+    }
+  }
+
+  const anomalies = []
+  for (const key of Object.keys(groups)) {
+    const entries = groups[key]
+    if (entries.length < 2) continue
+    for (let i = 0; i < entries.length; i++) {
+      const others = entries.filter((_, j) => j !== i)
+      const avgPrice = others.reduce((s, e) => s + e.price, 0) / others.length
+      const current = entries[i].price
+      if (avgPrice > 0 && current > avgPrice * 1.2) {
+        const deviation = Math.round(((current - avgPrice) / avgPrice) * 100)
+        anomalies.push({
+          productName: entries[i].productName,
+          currentPrice: current,
+          avgPrice,
+          deviation,
+          tripDate: entries[i].tripDate,
+          store: entries[i].store,
+        })
+      }
+    }
+  }
+
+  // De-dup by productName+tripDate
+  const seen = new Set()
+  return anomalies.filter((a) => {
+    const key = `${a.productName}__${a.tripDate}__${a.store}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+// ─── Shared Components ────────────────────────────────────────────────────────
 function Modal({ title, onClose, children }) {
   return (
     <div
       className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-end justify-center z-50"
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div className="bg-gray-900 border border-gray-700/50 rounded-t-3xl w-full max-w-md p-6 pb-10">
+      <div className="bg-gray-900 border border-gray-800 rounded-t-3xl w-full max-w-md p-5 pb-10 max-h-[92vh] overflow-y-auto">
         <div className="w-10 h-1 bg-gray-700 rounded-full mx-auto mb-5" />
-        <div className="flex items-center justify-between mb-6">
-          <h3 className="text-lg font-bold">{title}</h3>
-          <button
-            onClick={onClose}
-            className="w-8 h-8 bg-gray-800 rounded-xl flex items-center justify-center active:scale-95 transition-transform"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-        {children}
-      </div>
-    </div>
-  )
-}
-
-function CenterModal({ title, onClose, children }) {
-  return (
-    <div
-      className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 px-4"
-      onClick={(e) => e.target === e.currentTarget && onClose()}
-    >
-      <div className="bg-gray-900 border border-gray-700/50 rounded-3xl w-full max-w-sm p-6">
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center justify-between mb-5">
           <h3 className="text-lg font-bold">{title}</h3>
           <button
             onClick={onClose}
@@ -119,477 +172,621 @@ function CenterModal({ title, onClose, children }) {
 function Input({ label, ...props }) {
   return (
     <div>
-      {label && <label className="text-sm text-gray-400 mb-1.5 block">{label}</label>}
+      {label && <label className="text-xs text-gray-400 mb-1 block">{label}</label>}
       <input
         {...props}
-        className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors"
+        className={`w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 transition-colors text-sm ${props.className || ''}`}
       />
     </div>
   )
 }
 
-function PrimaryButton({ children, onClick, className = '' }) {
+function PrimaryButton({ children, onClick, disabled, className = '' }) {
   return (
     <button
       onClick={onClick}
-      className={`w-full bg-blue-600 hover:bg-blue-500 active:scale-95 transition-all py-3.5 rounded-xl font-semibold text-sm ${className}`}
+      disabled={disabled}
+      className={`w-full bg-blue-600 hover:bg-blue-500 active:scale-95 disabled:opacity-40 transition-all py-3.5 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 ${className}`}
     >
       {children}
     </button>
   )
 }
 
-// ─── Main App ─────────────────────────────────────────────────────────────────
+// ─── Empty State ──────────────────────────────────────────────────────────────
+function EmptyState({ icon: Icon, title, subtitle }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-20 text-center">
+      <div className="w-16 h-16 bg-gray-900 border border-gray-800 rounded-2xl flex items-center justify-center mx-auto mb-4">
+        <Icon className="w-8 h-8 text-gray-700" />
+      </div>
+      <p className="text-gray-400 font-medium">{title}</p>
+      {subtitle && <p className="text-xs text-gray-600 mt-1">{subtitle}</p>}
+    </div>
+  )
+}
 
-export default function App() {
-  const [state, setState] = useState(loadState)
-  const [tab, setTab] = useState('dashboard')
+// ─── Category Bar ─────────────────────────────────────────────────────────────
+function CategoryBar({ products }) {
+  const totals = { basics: 0, convenience: 0, luxury: 0 }
+  for (const p of products) {
+    totals[p.category] = (totals[p.category] || 0) + (p.price || 0)
+  }
+  const total = totals.basics + totals.convenience + totals.luxury
+  if (total === 0) return null
+  return (
+    <div className="flex rounded-full overflow-hidden h-1.5 w-full gap-0.5">
+      {totals.basics > 0 && (
+        <div className="bg-green-500 rounded-full" style={{ width: `${(totals.basics / total) * 100}%` }} />
+      )}
+      {totals.convenience > 0 && (
+        <div className="bg-orange-500 rounded-full" style={{ width: `${(totals.convenience / total) * 100}%` }} />
+      )}
+      {totals.luxury > 0 && (
+        <div className="bg-red-500 rounded-full" style={{ width: `${(totals.luxury / total) * 100}%` }} />
+      )}
+    </div>
+  )
+}
 
-  // Modals
-  const [expenseOpen, setExpenseOpen] = useState(false)
-  const [debtOpen, setDebtOpen] = useState(false)
-  const [editField, setEditField] = useState(null) // 'bankBalance' | 'savingsBalance'
+// ─── Empty product row factory ────────────────────────────────────────────────
+function emptyProduct() {
+  return {
+    id: generateId(),
+    name: '',
+    quantity: '',
+    unit: 'יח\'',
+    price: '',
+    category: 'convenience',
+  }
+}
 
-  // Forms
-  const [expenseForm, setExpenseForm] = useState({ name: '', amount: '' })
-  const [debtForm, setDebtForm] = useState({ name: '', amount: '', note: '' })
-  const [editValue, setEditValue] = useState('')
+const UNITS = ['יח\'', 'ק"ג', 'ל', 'גרם', 'מ"ל']
 
-  // Feedback
-  const [transferDone, setTransferDone] = useState(false)
+// ─── TAB 1: קנייה ─────────────────────────────────────────────────────────────
+function TabShopping({ onSave }) {
+  const [date, setDate] = useState(todayISO())
+  const [store, setStore] = useState('')
+  const [products, setProducts] = useState([emptyProduct()])
   const [error, setError] = useState('')
 
-  // Persist to localStorage on every state change
+  const updateProduct = (id, field, value) => {
+    setProducts((prev) =>
+      prev.map((p) => {
+        if (p.id !== id) return p
+        const updated = { ...p, [field]: value }
+        if (field === 'name') {
+          updated.category = categorize(value)
+        }
+        return updated
+      })
+    )
+  }
+
+  const addProduct = () => setProducts((prev) => [...prev, emptyProduct()])
+
+  const removeProduct = (id) => {
+    setProducts((prev) => {
+      const filtered = prev.filter((p) => p.id !== id)
+      return filtered.length === 0 ? [emptyProduct()] : filtered
+    })
+  }
+
+  const total = products.reduce((s, p) => s + (parseFloat(p.price) || 0), 0)
+
+  const handleSave = () => {
+    if (!store.trim()) { setError('הכנס שם חנות'); return }
+    const validProducts = products.filter((p) => p.name.trim() && parseFloat(p.price) > 0)
+    if (validProducts.length === 0) { setError('הכנס לפחות מוצר אחד עם שם ומחיר'); return }
+
+    const trip = {
+      id: generateId(),
+      date,
+      store: store.trim(),
+      products: validProducts.map((p) => ({
+        id: p.id,
+        name: p.name.trim(),
+        quantity: parseFloat(p.quantity) || 1,
+        unit: p.unit,
+        price: parseFloat(p.price),
+        category: p.category,
+      })),
+      total,
+    }
+    onSave(trip)
+    setStore('')
+    setDate(todayISO())
+    setProducts([emptyProduct()])
+    setError('')
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Date + Store */}
+      <div className="flex gap-2">
+        <div className="flex-1">
+          <Input
+            label="תאריך"
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+          />
+        </div>
+        <div className="flex-1">
+          <Input
+            label="חנות"
+            type="text"
+            value={store}
+            onChange={(e) => setStore(e.target.value)}
+            placeholder="שם הסופרמרקט"
+          />
+        </div>
+      </div>
+
+      {/* Product rows */}
+      <div className="space-y-2">
+        {products.map((p, idx) => {
+          const up = unitPrice(p.price, p.quantity, p.unit)
+          const upLabel = unitPriceLabel(p.unit)
+          return (
+            <div key={p.id} className="bg-gray-900 border border-gray-800 rounded-2xl p-3 space-y-2">
+              {/* Row 1: name + badge */}
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={p.name}
+                  onChange={(e) => updateProduct(p.id, 'name', e.target.value)}
+                  onBlur={(e) => updateProduct(p.id, 'category', categorize(e.target.value))}
+                  placeholder={`מוצר ${idx + 1}`}
+                  className="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 text-sm transition-colors"
+                />
+                <span className={`text-xs px-2 py-1 rounded-lg border font-medium whitespace-nowrap ${CAT_COLOR[p.category]}`}>
+                  {CAT_LABEL[p.category]}
+                </span>
+              </div>
+              {/* Row 2: qty + unit + price + unit price + trash */}
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  value={p.quantity}
+                  onChange={(e) => updateProduct(p.id, 'quantity', e.target.value)}
+                  placeholder="כמות"
+                  className="w-16 bg-gray-800 border border-gray-700 rounded-xl px-2 py-2 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 text-sm text-center transition-colors"
+                />
+                <select
+                  value={p.unit}
+                  onChange={(e) => updateProduct(p.id, 'unit', e.target.value)}
+                  className="bg-gray-800 border border-gray-700 rounded-xl px-1 py-2 text-white focus:outline-none focus:border-blue-500 text-sm transition-colors"
+                >
+                  {UNITS.map((u) => (
+                    <option key={u} value={u}>{u}</option>
+                  ))}
+                </select>
+                <div className="relative flex-1">
+                  <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 text-xs">₪</span>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    value={p.price}
+                    onChange={(e) => updateProduct(p.id, 'price', e.target.value)}
+                    placeholder="מחיר"
+                    className="w-full bg-gray-800 border border-gray-700 rounded-xl pr-7 pl-2 py-2 text-white placeholder-gray-600 focus:outline-none focus:border-blue-500 text-sm transition-colors"
+                  />
+                </div>
+                {p.price && p.quantity && parseFloat(p.price) > 0 && parseFloat(p.quantity) > 0 ? (
+                  <span className="text-gray-500 text-xs whitespace-nowrap">
+                    ₪{fmt(up)}<br />{upLabel}
+                  </span>
+                ) : (
+                  <span className="w-10" />
+                )}
+                <button
+                  onClick={() => removeProduct(p.id)}
+                  className="w-8 h-8 bg-red-950/60 rounded-xl flex items-center justify-center active:scale-95 transition-transform shrink-0"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                </button>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Add product */}
+      <button
+        onClick={addProduct}
+        className="w-full border border-dashed border-gray-700 rounded-2xl py-3 text-gray-500 text-sm flex items-center justify-center gap-2 active:scale-95 transition-all hover:border-gray-600 hover:text-gray-400"
+      >
+        <Plus className="w-4 h-4" />
+        הוסף מוצר
+      </button>
+
+      {/* Error */}
+      {error && (
+        <div className="bg-red-950/60 border border-red-800 rounded-xl px-4 py-3 text-sm text-red-300 flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          {error}
+        </div>
+      )}
+
+      {/* Total + Save */}
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl p-4 flex items-center justify-between">
+        <span className="text-gray-400 text-sm">סה"כ</span>
+        <span className="text-2xl font-bold text-white">₪{fmt(total)}</span>
+      </div>
+
+      <PrimaryButton onClick={handleSave}>
+        <ShoppingCart className="w-4 h-4" />
+        שמור קנייה
+      </PrimaryButton>
+    </div>
+  )
+}
+
+// ─── TAB 2: היסטוריה ──────────────────────────────────────────────────────────
+function TabHistory({ trips, onDelete }) {
+  const [expanded, setExpanded] = useState(null)
+
+  const sorted = [...trips].sort((a, b) => b.date.localeCompare(a.date))
+
+  if (sorted.length === 0) {
+    return <EmptyState icon={History} title="אין קניות עדיין" subtitle="הוסף קנייה ראשונה בלשונית 'קנייה'" />
+  }
+
+  return (
+    <div className="space-y-3">
+      {sorted.map((trip) => {
+        const isOpen = expanded === trip.id
+        return (
+          <div key={trip.id} className="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+            {/* Header */}
+            <button
+              className="w-full p-4 text-right active:bg-gray-800/50 transition-colors"
+              onClick={() => setExpanded(isOpen ? null : trip.id)}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="font-semibold truncate">{trip.store}</span>
+                    <span className="text-xs text-gray-500 shrink-0">{formatDate(trip.date)}</span>
+                  </div>
+                  <CategoryBar products={trip.products} />
+                  <div className="flex items-center gap-3 mt-2">
+                    <span className="text-xl font-bold text-white">₪{fmt(trip.total)}</span>
+                    <span className="text-xs text-gray-500">{trip.products.length} מוצרים</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onDelete(trip.id) }}
+                    className="w-7 h-7 bg-red-950/60 rounded-lg flex items-center justify-center active:scale-95 transition-transform"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                  </button>
+                  {isOpen ? (
+                    <ChevronUp className="w-4 h-4 text-gray-500" />
+                  ) : (
+                    <ChevronDown className="w-4 h-4 text-gray-500" />
+                  )}
+                </div>
+              </div>
+            </button>
+
+            {/* Expanded product list */}
+            {isOpen && (
+              <div className="border-t border-gray-800">
+                {trip.products.map((product) => {
+                  const up = unitPrice(product.price, product.quantity, product.unit)
+                  const upLabel = unitPriceLabel(product.unit)
+                  return (
+                    <div key={product.id} className="flex items-center justify-between px-4 py-2.5 border-b border-gray-800/50 last:border-b-0">
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <span className={`text-xs px-1.5 py-0.5 rounded border ${CAT_COLOR[product.category]}`}>
+                          {CAT_LABEL[product.category]}
+                        </span>
+                        <span className="text-sm truncate">{product.name}</span>
+                        <span className="text-xs text-gray-600 shrink-0">{product.quantity} {product.unit}</span>
+                      </div>
+                      <div className="flex flex-col items-end shrink-0 mr-2">
+                        <span className="text-sm font-medium text-white">₪{fmt(product.price)}</span>
+                        <span className="text-xs text-gray-600">₪{fmt(up)} {upLabel}</span>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ─── TAB 3: ניתוח ─────────────────────────────────────────────────────────────
+function TabAnalysis({ trips, monthlyBudget, onBudgetChange }) {
+  const now = new Date()
+  const thisMonthTrips = trips.filter((t) => {
+    const d = new Date(t.date)
+    return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()
+  })
+
+  const catTotals = { basics: 0, convenience: 0, luxury: 0 }
+  const productMap = {}
+
+  for (const trip of thisMonthTrips) {
+    for (const p of trip.products) {
+      catTotals[p.category] = (catTotals[p.category] || 0) + p.price
+      const key = p.name.toLowerCase().trim()
+      if (!productMap[key]) productMap[key] = { name: p.name, total: 0, count: 0 }
+      productMap[key].total += p.price
+      productMap[key].count += 1
+    }
+  }
+
+  const monthTotal = catTotals.basics + catTotals.convenience + catTotals.luxury
+  const budgetPct = monthlyBudget > 0 ? (monthTotal / monthlyBudget) * 100 : 0
+
+  const top5 = Object.values(productMap)
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 5)
+
+  const storeFreq = {}
+  for (const trip of trips) {
+    storeFreq[trip.store] = (storeFreq[trip.store] || 0) + 1
+  }
+  const topStores = Object.entries(storeFreq)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+
+  const progressColor =
+    budgetPct >= 100 ? 'bg-red-500' : budgetPct >= 80 ? 'bg-orange-500' : 'bg-green-500'
+
+  return (
+    <div className="space-y-4">
+      {/* Budget input */}
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl p-4">
+        <p className="text-xs text-gray-400 mb-2">תקציב חודשי (₪)</p>
+        <input
+          type="number"
+          inputMode="decimal"
+          value={monthlyBudget}
+          onChange={(e) => onBudgetChange(parseFloat(e.target.value) || 0)}
+          className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:border-blue-500 text-lg font-bold transition-colors"
+        />
+      </div>
+
+      {/* Budget progress */}
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl p-4">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-sm text-gray-400">חודש זה</span>
+          <span className="text-sm font-semibold">
+            ₪{fmt(monthTotal)} / ₪{fmt(monthlyBudget)}
+          </span>
+        </div>
+        <div className="w-full bg-gray-800 rounded-full h-2 overflow-hidden">
+          <div
+            className={`h-2 rounded-full transition-all ${progressColor}`}
+            style={{ width: `${Math.min(budgetPct, 100)}%` }}
+          />
+        </div>
+        <p className={`text-xs mt-1.5 ${budgetPct >= 100 ? 'text-red-400' : budgetPct >= 80 ? 'text-orange-400' : 'text-green-400'}`}>
+          {budgetPct >= 100
+            ? `חרגת מהתקציב ב-₪${fmt(monthTotal - monthlyBudget)}`
+            : `נשאר ₪${fmt(monthlyBudget - monthTotal)} (${(100 - budgetPct).toFixed(0)}%)`}
+        </p>
+      </div>
+
+      {/* Category cards */}
+      <div className="grid grid-cols-3 gap-2">
+        {[
+          { key: 'basics', label: 'בסיס', color: 'border-green-800 bg-green-950/40', text: 'text-green-400' },
+          { key: 'convenience', label: 'נוחות', color: 'border-orange-800 bg-orange-950/40', text: 'text-orange-400' },
+          { key: 'luxury', label: 'מותרות', color: 'border-red-800 bg-red-950/40', text: 'text-red-400' },
+        ].map(({ key, label, color, text }) => {
+          const amount = catTotals[key]
+          const pct = monthTotal > 0 ? ((amount / monthTotal) * 100).toFixed(0) : 0
+          return (
+            <div key={key} className={`rounded-2xl border p-3 ${color}`}>
+              <p className={`text-xs font-medium mb-1 ${text}`}>{label}</p>
+              <p className="text-base font-bold text-white">₪{fmt(amount)}</p>
+              <p className="text-xs text-gray-500">{pct}%</p>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Top 5 products */}
+      {top5.length > 0 && (
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-4">
+          <h3 className="text-sm font-semibold text-gray-300 mb-3">5 מוצרים יקרים ביותר החודש</h3>
+          <div className="space-y-2">
+            {top5.map((item, i) => (
+              <div key={i} className="flex items-center justify-between">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-xs w-5 h-5 bg-gray-800 rounded-lg flex items-center justify-center text-gray-500 shrink-0">
+                    {i + 1}
+                  </span>
+                  <span className="text-sm truncate">{item.name}</span>
+                </div>
+                <span className="text-sm font-semibold text-white shrink-0 mr-2">₪{fmt(item.total)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Store frequency */}
+      {topStores.length > 0 && (
+        <div className="bg-gray-900 border border-gray-800 rounded-2xl p-4">
+          <h3 className="text-sm font-semibold text-gray-300 mb-3">חנויות נפוצות</h3>
+          <div className="space-y-2">
+            {topStores.map(([store, count], i) => (
+              <div key={i} className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs w-5 h-5 bg-gray-800 rounded-lg flex items-center justify-center text-gray-500">
+                    {i + 1}
+                  </span>
+                  <span className="text-sm">{store}</span>
+                </div>
+                <span className="text-xs text-gray-500">{count} קניות</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {thisMonthTrips.length === 0 && (
+        <EmptyState icon={TrendingDown} title="אין נתונים לחודש זה" subtitle="הוסף קניות כדי לראות ניתוח" />
+      )}
+    </div>
+  )
+}
+
+// ─── TAB 4: התראות ────────────────────────────────────────────────────────────
+function TabAlerts({ trips }) {
+  const anomalies = detectAnomalies(trips)
+
+  if (anomalies.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 text-center">
+        <div className="w-16 h-16 bg-green-950/60 border border-green-800 rounded-2xl flex items-center justify-center mx-auto mb-4">
+          <Check className="w-8 h-8 text-green-400" />
+        </div>
+        <p className="text-green-400 font-semibold">הכל נראה תקין!</p>
+        <p className="text-xs text-gray-600 mt-1">לא נמצאו חריגות מחיר</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-gray-500">{anomalies.length} חריגות נמצאו</p>
+      {anomalies.map((a, i) => (
+        <div key={i} className="bg-red-950/30 border border-red-900/60 rounded-2xl p-4">
+          <div className="flex items-start gap-3">
+            <div className="w-9 h-9 bg-red-950 rounded-xl flex items-center justify-center shrink-0 mt-0.5">
+              <AlertTriangle className="w-4 h-4 text-red-400" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="font-semibold text-white truncate">{a.productName}</p>
+              <p className="text-xs text-gray-400 mt-0.5">
+                {a.store} · {formatDate(a.tripDate)}
+              </p>
+              <p className="text-sm text-red-300 mt-2">
+                שילמת ₪{fmt(a.currentPrice)} במקום ₪{fmt(a.avgPrice)} בממוצע
+              </p>
+              <span className="inline-block mt-1.5 text-xs bg-red-950 border border-red-800 text-red-400 px-2 py-0.5 rounded-lg font-semibold">
+                +{a.deviation}% מהממוצע
+              </span>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+export default function App() {
+  const [state, setState] = useState(loadState)
+  const [tab, setTab] = useState('shopping')
+
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
   }, [state])
 
-  const showError = (msg) => {
-    setError(msg)
-    setTimeout(() => setError(''), 2500)
-  }
+  const handleSaveTrip = useCallback((trip) => {
+    setState((prev) => ({ ...prev, trips: [trip, ...prev.trips] }))
+    setTab('history')
+  }, [])
 
-  // ── Actions ────────────────────────────────────────────────────────────────
+  const handleDeleteTrip = useCallback((id) => {
+    setState((prev) => ({ ...prev, trips: prev.trips.filter((t) => t.id !== id) }))
+  }, [])
 
-  const handleWeeklyTransfer = useCallback(() => {
-    if (state.bankBalance < 100) {
-      showError('אין מספיק כסף בעובר ושב (דרוש ₪100)')
-      return
-    }
-    setState((prev) => ({
-      ...prev,
-      bankBalance: prev.bankBalance - 100,
-      weeklyBudget: prev.weeklyBudget + 100,
-    }))
-    setTransferDone(true)
-    setTimeout(() => setTransferDone(false), 2000)
-  }, [state.bankBalance])
+  const handleBudgetChange = useCallback((val) => {
+    setState((prev) => ({ ...prev, monthlyBudget: val }))
+  }, [])
 
-  const handleAddExpense = () => {
-    const amount = parseFloat(expenseForm.amount)
-    if (!expenseForm.name.trim() || !amount || amount <= 0) {
-      showError('מלא שם וסכום תקין')
-      return
-    }
-    if (state.weeklyBudget < amount) {
-      showError('אין מספיק בתקציב השבועי!')
-      return
-    }
-    setState((prev) => ({
-      ...prev,
-      weeklyBudget: prev.weeklyBudget - amount,
-      expenses: [
-        { id: Date.now(), name: expenseForm.name.trim(), amount, date: today() },
-        ...prev.expenses,
-      ],
-    }))
-    setExpenseForm({ name: '', amount: '' })
-    setExpenseOpen(false)
-  }
+  const anomalyCount = detectAnomalies(state.trips).length
 
-  const handleAddDebt = () => {
-    const amount = parseFloat(debtForm.amount)
-    if (!debtForm.name.trim() || !amount || amount <= 0) {
-      showError('מלא שם וסכום תקין')
-      return
-    }
-    setState((prev) => ({
-      ...prev,
-      debts: [
-        {
-          id: Date.now(),
-          name: debtForm.name.trim(),
-          amount,
-          note: debtForm.note.trim(),
-          date: today(),
-        },
-        ...prev.debts,
-      ],
-    }))
-    setDebtForm({ name: '', amount: '', note: '' })
-    setDebtOpen(false)
-  }
-
-  const handleDeleteDebt = (id) => {
-    setState((prev) => ({ ...prev, debts: prev.debts.filter((d) => d.id !== id) }))
-  }
-
-  const handleMarkDebtPaid = (id) => {
-    setState((prev) => ({ ...prev, debts: prev.debts.filter((d) => d.id !== id) }))
-  }
-
-  const handleEditBalance = () => {
-    const val = parseFloat(editValue)
-    if (isNaN(val) || val < 0) {
-      showError('הכנס מספר תקין')
-      return
-    }
-    setState((prev) => ({ ...prev, [editField]: val }))
-    setEditField(null)
-    setEditValue('')
-  }
-
-  const openEdit = (field, current) => {
-    setEditField(field)
-    setEditValue(String(current))
-  }
-
-  const totalDebts = state.debts.reduce((s, d) => s + d.amount, 0)
-
-  // ── Render ─────────────────────────────────────────────────────────────────
+  const NAV_TABS = [
+    { id: 'shopping', icon: ShoppingCart, label: 'קנייה' },
+    { id: 'history', icon: History, label: 'היסטוריה', badge: state.trips.length || null },
+    { id: 'analysis', icon: TrendingDown, label: 'ניתוח' },
+    { id: 'alerts', icon: AlertCircle, label: 'התראות', badge: anomalyCount || null },
+  ]
 
   return (
     <div className="min-h-screen bg-gray-950 text-white" dir="rtl">
-
-      {/* ── Header ── */}
+      {/* Header */}
       <header className="bg-gray-950/90 backdrop-blur border-b border-gray-800/60 px-4 py-4 sticky top-0 z-10">
-        <div className="flex items-center justify-between max-w-md mx-auto">
+        <div className="max-w-md mx-auto flex items-center justify-between">
           <div>
-            <h1 className="text-lg font-bold leading-none">ניהול תקציב</h1>
-            <p className="text-xs text-gray-500 mt-0.5">עסק הדרשיות</p>
+            <h1 className="text-lg font-bold leading-none">ניהול תקציב סופרמרקט</h1>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {tab === 'shopping' && 'הוסף קנייה חדשה'}
+              {tab === 'history' && 'היסטוריית קניות'}
+              {tab === 'analysis' && 'ניתוח וסטטיסטיקות'}
+              {tab === 'alerts' && 'חריגות מחיר'}
+            </p>
           </div>
           <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center shadow-lg shadow-blue-900/40">
-            <span className="text-sm font-bold">י</span>
+            <ShoppingCart className="w-4 h-4 text-white" />
           </div>
         </div>
       </header>
 
-      {/* ── Error Toast ── */}
-      {error && (
-        <div className="fixed top-16 left-4 right-4 z-50 max-w-md mx-auto">
-          <div className="bg-red-900/90 border border-red-700 rounded-2xl px-4 py-3 text-sm text-red-200 flex items-center gap-2 shadow-xl">
-            <AlertCircle className="w-4 h-4 shrink-0" />
-            {error}
-          </div>
-        </div>
-      )}
-
-      {/* ── Main ── */}
-      <main className="max-w-md mx-auto px-4 pb-28 pt-4">
-
-        {/* ════ DASHBOARD TAB ════ */}
-        {tab === 'dashboard' && (
-          <div className="space-y-3">
-
-            {/* Bank */}
-            <BalanceCard
-              label="עובר ושב בבנק"
-              value={state.bankBalance}
-              gradient="bg-gradient-to-br from-blue-950 to-blue-900"
-              border="border-blue-800/50"
-              icon={Wallet}
-              iconBg="bg-blue-700"
-              onEdit={() => openEdit('bankBalance', state.bankBalance)}
-            />
-
-            {/* Savings */}
-            <BalanceCard
-              label="פיקדון לרשיון"
-              value={state.savingsBalance}
-              gradient="bg-gradient-to-br from-violet-950 to-violet-900"
-              border="border-violet-800/50"
-              icon={PiggyBank}
-              iconBg="bg-violet-700"
-              onEdit={() => openEdit('savingsBalance', state.savingsBalance)}
-            />
-
-            {/* Weekly Budget */}
-            <div className="bg-gradient-to-br from-emerald-950 to-emerald-900 rounded-2xl p-5 border border-emerald-800/50">
-              <div className="flex items-center gap-2 mb-3">
-                <div className="w-9 h-9 bg-emerald-700 rounded-xl flex items-center justify-center">
-                  <ShoppingCart className="w-4 h-4 text-white" />
-                </div>
-                <span className="text-sm font-medium opacity-80">תקציב שבועי</span>
-              </div>
-              <div className="text-4xl font-bold tracking-tight mb-5">₪{fmt(state.weeklyBudget)}</div>
-
-              {/* Transfer button */}
-              <button
-                onClick={handleWeeklyTransfer}
-                className={`w-full py-3.5 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 transition-all active:scale-95 ${
-                  transferDone
-                    ? 'bg-green-600 text-white'
-                    : 'bg-emerald-700 hover:bg-emerald-600 text-white'
-                }`}
-              >
-                {transferDone ? (
-                  <><Check className="w-4 h-4" /> הועבר ₪100 בהצלחה!</>
-                ) : (
-                  <><ArrowRightLeft className="w-4 h-4" /> העברה שבועית — ₪100</>
-                )}
-              </button>
-
-              {/* Expense button */}
-              <button
-                onClick={() => setExpenseOpen(true)}
-                className="w-full mt-2 py-3.5 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 bg-gray-800/80 hover:bg-gray-800 active:scale-95 border border-gray-700/50 transition-all"
-              >
-                <TrendingDown className="w-4 h-4 text-red-400" />
-                הוסף הוצאה מהירה
-              </button>
-            </div>
-
-            {/* Recent Expenses */}
-            {state.expenses.length > 0 && (
-              <div className="pt-2">
-                <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">הוצאות אחרונות</h2>
-                <div className="space-y-2">
-                  {state.expenses.slice(0, 6).map((exp) => (
-                    <div
-                      key={exp.id}
-                      className="bg-gray-900 border border-gray-800/60 rounded-2xl px-4 py-3 flex items-center justify-between"
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 bg-red-950 rounded-xl flex items-center justify-center shrink-0">
-                          <Receipt className="w-4 h-4 text-red-400" />
-                        </div>
-                        <div>
-                          <p className="text-sm font-medium">{exp.name}</p>
-                          <p className="text-xs text-gray-600">{exp.date}</p>
-                        </div>
-                      </div>
-                      <span className="text-red-400 font-semibold text-sm">−₪{fmt(exp.amount)}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
+      {/* Main content */}
+      <main className="max-w-md mx-auto px-4 pt-4 pb-28">
+        {tab === 'shopping' && (
+          <TabShopping onSave={handleSaveTrip} />
         )}
-
-        {/* ════ DEBTS TAB ════ */}
-        {tab === 'debts' && (
-          <div>
-            {/* Header row */}
-            <div className="flex items-start justify-between mb-5">
-              <div>
-                <h2 className="text-lg font-bold">חובות</h2>
-                <p className="text-sm text-gray-500 mt-0.5">
-                  סה"כ מגיע לך:{' '}
-                  <span className="text-green-400 font-bold">₪{fmt(totalDebts)}</span>
-                </p>
-              </div>
-              <button
-                onClick={() => setDebtOpen(true)}
-                className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 active:scale-95 transition-all px-4 py-2.5 rounded-xl text-sm font-semibold"
-              >
-                <Plus className="w-4 h-4" />
-                הוסף
-              </button>
-            </div>
-
-            {state.debts.length === 0 ? (
-              <div className="text-center py-20">
-                <div className="w-16 h-16 bg-gray-900 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                  <AlertCircle className="w-8 h-8 text-gray-700" />
-                </div>
-                <p className="text-gray-500 font-medium">אין חובות ברשימה</p>
-                <p className="text-xs text-gray-700 mt-1">לחץ "הוסף" כדי להוסיף חוב</p>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {state.debts.map((debt) => (
-                  <div
-                    key={debt.id}
-                    className="bg-gray-900 border border-gray-800/60 rounded-2xl p-4"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex-1 min-w-0">
-                        <p className="font-semibold truncate">{debt.name}</p>
-                        {debt.note && (
-                          <p className="text-sm text-gray-500 mt-0.5 truncate">{debt.note}</p>
-                        )}
-                        <p className="text-xs text-gray-700 mt-1.5">{debt.date}</p>
-                      </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <span className="text-green-400 font-bold text-lg">₪{fmt(debt.amount)}</span>
-                        <button
-                          onClick={() => handleMarkDebtPaid(debt.id)}
-                          className="w-8 h-8 bg-green-900/50 rounded-xl flex items-center justify-center active:scale-95 transition-transform"
-                          title="סמן כשולם"
-                        >
-                          <Check className="w-4 h-4 text-green-400" />
-                        </button>
-                        <button
-                          onClick={() => handleDeleteDebt(debt.id)}
-                          className="w-8 h-8 bg-red-950 rounded-xl flex items-center justify-center active:scale-95 transition-transform"
-                          title="מחק"
-                        >
-                          <Trash2 className="w-4 h-4 text-red-400" />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ════ HISTORY TAB ════ */}
         {tab === 'history' && (
-          <div>
-            <h2 className="text-lg font-bold mb-5">היסטוריית הוצאות</h2>
-            {state.expenses.length === 0 ? (
-              <div className="text-center py-20">
-                <div className="w-16 h-16 bg-gray-900 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                  <History className="w-8 h-8 text-gray-700" />
-                </div>
-                <p className="text-gray-500 font-medium">אין הוצאות עדיין</p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {state.expenses.map((exp) => (
-                  <div
-                    key={exp.id}
-                    className="bg-gray-900 border border-gray-800/60 rounded-2xl px-4 py-3 flex items-center justify-between"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 bg-red-950 rounded-xl flex items-center justify-center shrink-0">
-                        <Receipt className="w-4 h-4 text-red-400" />
-                      </div>
-                      <div>
-                        <p className="text-sm font-medium">{exp.name}</p>
-                        <p className="text-xs text-gray-600">{exp.date}</p>
-                      </div>
-                    </div>
-                    <span className="text-red-400 font-semibold text-sm">−₪{fmt(exp.amount)}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <TabHistory trips={state.trips} onDelete={handleDeleteTrip} />
+        )}
+        {tab === 'analysis' && (
+          <TabAnalysis
+            trips={state.trips}
+            monthlyBudget={state.monthlyBudget}
+            onBudgetChange={handleBudgetChange}
+          />
+        )}
+        {tab === 'alerts' && (
+          <TabAlerts trips={state.trips} />
         )}
       </main>
 
-      {/* ── Bottom Navigation ── */}
-      <nav className="fixed bottom-0 left-0 right-0 bg-gray-950/95 backdrop-blur border-t border-gray-800/60 z-10">
-        <div className="flex justify-around max-w-md mx-auto px-2 py-2">
-          {[
-            { id: 'dashboard', icon: Wallet, label: 'דשבורד' },
-            { id: 'debts', icon: AlertCircle, label: 'חובות', badge: state.debts.length || null },
-            { id: 'history', icon: History, label: 'היסטוריה' },
-          ].map(({ id, icon: Icon, label, badge }) => (
+      {/* Bottom Navigation */}
+      <nav className="fixed bottom-0 left-0 right-0 bg-gray-950/95 backdrop-blur border-t border-gray-800/60 z-20">
+        <div className="flex justify-around max-w-md mx-auto px-1 py-2">
+          {NAV_TABS.map(({ id, icon: Icon, label, badge }) => (
             <button
               key={id}
               onClick={() => setTab(id)}
-              className={`flex flex-col items-center gap-1 py-2 px-6 rounded-2xl transition-colors relative ${
+              className={`flex flex-col items-center gap-0.5 py-2 px-3 rounded-2xl transition-colors relative ${
                 tab === id ? 'text-blue-400' : 'text-gray-600 hover:text-gray-400'
               }`}
             >
-              <Icon className="w-5 h-5" />
+              <div className="relative">
+                <Icon className="w-5 h-5" />
+                {badge ? (
+                  <span className="absolute -top-1.5 -left-1.5 min-w-[16px] h-4 bg-red-500 rounded-full text-white text-[9px] flex items-center justify-center font-bold px-0.5">
+                    {badge > 99 ? '99+' : badge}
+                  </span>
+                ) : null}
+              </div>
               <span className="text-xs font-medium">{label}</span>
-              {badge ? (
-                <span className="absolute top-1.5 right-3.5 w-4 h-4 bg-red-500 rounded-full text-white text-[10px] flex items-center justify-center font-bold">
-                  {badge}
-                </span>
-              ) : null}
+              {tab === id && (
+                <span className="absolute bottom-0 left-1/2 -translate-x-1/2 w-1 h-1 bg-blue-400 rounded-full" />
+              )}
             </button>
           ))}
         </div>
-        {/* iPhone safe area */}
         <div className="h-safe-area-inset-bottom" />
       </nav>
-
-      {/* ══ MODAL: Add Expense ══ */}
-      {expenseOpen && (
-        <Modal title="הוצאה מהירה" onClose={() => setExpenseOpen(false)}>
-          <div className="space-y-4">
-            <Input
-              label="שם ההוצאה"
-              type="text"
-              value={expenseForm.name}
-              onChange={(e) => setExpenseForm((p) => ({ ...p, name: e.target.value }))}
-              placeholder="למשל: אוכל, תחבורה, חבר..."
-              autoFocus
-            />
-            <Input
-              label="סכום (₪)"
-              type="number"
-              inputMode="decimal"
-              value={expenseForm.amount}
-              onChange={(e) => setExpenseForm((p) => ({ ...p, amount: e.target.value }))}
-              placeholder="0"
-            />
-            <div className="text-xs text-gray-500 text-center">
-              תקציב זמין: <span className="text-emerald-400 font-semibold">₪{fmt(state.weeklyBudget)}</span>
-            </div>
-            <PrimaryButton onClick={handleAddExpense}>הוסף הוצאה</PrimaryButton>
-          </div>
-        </Modal>
-      )}
-
-      {/* ══ MODAL: Add Debt ══ */}
-      {debtOpen && (
-        <Modal title="הוסף חוב" onClose={() => setDebtOpen(false)}>
-          <div className="space-y-4">
-            <Input
-              label="שם החייב"
-              type="text"
-              value={debtForm.name}
-              onChange={(e) => setDebtForm((p) => ({ ...p, name: e.target.value }))}
-              placeholder="מי חייב לך כסף?"
-              autoFocus
-            />
-            <Input
-              label="סכום (₪)"
-              type="number"
-              inputMode="decimal"
-              value={debtForm.amount}
-              onChange={(e) => setDebtForm((p) => ({ ...p, amount: e.target.value }))}
-              placeholder="0"
-            />
-            <Input
-              label="הערה (אופציונלי)"
-              type="text"
-              value={debtForm.note}
-              onChange={(e) => setDebtForm((p) => ({ ...p, note: e.target.value }))}
-              placeholder="בשביל מה? שיעור, הלוואה..."
-            />
-            <PrimaryButton onClick={handleAddDebt}>הוסף לרשימה</PrimaryButton>
-          </div>
-        </Modal>
-      )}
-
-      {/* ══ MODAL: Edit Balance ══ */}
-      {editField && (
-        <CenterModal
-          title={editField === 'bankBalance' ? 'עדכן עובר ושב' : 'עדכן פיקדון לרשיון'}
-          onClose={() => setEditField(null)}
-        >
-          <div className="space-y-4">
-            <Input
-              label="יתרה חדשה (₪)"
-              type="number"
-              inputMode="decimal"
-              value={editValue}
-              onChange={(e) => setEditValue(e.target.value)}
-              autoFocus
-            />
-            <PrimaryButton onClick={handleEditBalance}>שמור</PrimaryButton>
-          </div>
-        </CenterModal>
-      )}
     </div>
   )
 }
