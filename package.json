@@ -12,9 +12,11 @@
     "@capacitor/android": "^5.7.8",
     "@capacitor/cli": "^5.7.8",
     "@capacitor/core": "^5.7.8",
+    "@capacitor/local-notifications": "^5.0.8",
     "lucide-react": "^0.263.1",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.0.0",

@@ -1,4 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { createWorker } from 'tesseract.js'
+import { requestNotificationPermission, scheduleDailyReminder, cancelDailyReminder, checkWebNotificationTime } from './notifications.js'
 import {
   ShoppingCart,
   History,
@@ -11,6 +13,7 @@ import {
   ChevronUp,
   Check,
   AlertTriangle,
+  Camera,
 } from 'lucide-react'
 
 // ─── Storage ───────────────────────────────────────────────────────────────────
@@ -74,6 +77,41 @@ const CAT_COLOR = {
   basics: 'bg-green-900/60 text-green-400 border-green-800',
   convenience: 'bg-orange-900/60 text-orange-400 border-orange-800',
   luxury: 'bg-red-900/60 text-red-400 border-red-800',
+}
+
+// ─── Receipt Scanning ─────────────────────────────────────────────────────────
+async function scanReceiptImage(imageDataUrl) {
+  const worker = await createWorker(['heb', 'eng'], 1, { logger: () => {} })
+  const { data: { text } } = await worker.recognize(imageDataUrl)
+  await worker.terminate()
+  return parseReceiptText(text)
+}
+
+function parseReceiptText(text) {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
+  const products = []
+  const priceRegex = /(\d{1,4}[.,]\d{2})/
+  const skipWords = ['סה"כ','סכום','מע"מ','הנחה','עודף','שולם','סך','total','vat','change','paid','subtotal','tax','קבלה','חשבונית']
+
+  for (const line of lines) {
+    const match = line.match(priceRegex)
+    if (!match) continue
+    const price = parseFloat(match[1].replace(',', '.'))
+    if (price <= 0 || price > 999) continue
+    let name = line.replace(match[0], '').replace(/[*×x]/gi, '').replace(/\s{2,}/g, ' ').trim()
+    name = name.replace(/^\d+\s*[xX×]\s*/, '').trim()
+    if (name.length < 2) continue
+    if (skipWords.some(w => name.toLowerCase().includes(w.toLowerCase()))) continue
+    products.push({
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2),
+      name,
+      quantity: 1,
+      unit: "יח'",
+      price,
+      category: categorize(name)
+    })
+  }
+  return products
 }
 
 // ─── Unit Price Logic ─────────────────────────────────────────────────────────
@@ -249,6 +287,42 @@ function TabShopping({ onSave }) {
   const [store, setStore] = useState('')
   const [products, setProducts] = useState([emptyProduct()])
   const [error, setError] = useState('')
+  const [scanning, setScanning] = useState(false)
+  const [showCategoryHelp, setShowCategoryHelp] = useState(false)
+  const [toast, setToast] = useState('')
+  const cameraInputRef = useRef(null)
+
+  function showToast(msg) {
+    setToast(msg)
+    setTimeout(() => setToast(''), 3000)
+  }
+
+  async function handleReceiptScan(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setScanning(true)
+    try {
+      const reader = new FileReader()
+      reader.onload = async (ev) => {
+        try {
+          const extracted = await scanReceiptImage(ev.target.result)
+          if (extracted.length === 0) {
+            showToast('לא נמצאו מוצרים בקבלה, נסה שוב')
+          } else {
+            setProducts(prev => [...prev, ...extracted])
+            showToast(`נמצאו ${extracted.length} מוצרים מהקבלה ✓`)
+          }
+        } finally {
+          setScanning(false)
+          if (cameraInputRef.current) cameraInputRef.current.value = ''
+        }
+      }
+      reader.readAsDataURL(file)
+    } catch {
+      setScanning(false)
+      showToast('שגיאה בניתוח הקבלה')
+    }
+  }
 
   const updateProduct = (id, field, value) => {
     setProducts((prev) =>
@@ -323,6 +397,18 @@ function TabShopping({ onSave }) {
         </div>
       </div>
 
+      {/* Product rows header */}
+      <div className="flex items-center justify-between px-1">
+        <span className="text-xs text-gray-500">מוצרים</span>
+        <button
+          onClick={() => setShowCategoryHelp(true)}
+          className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 transition-colors"
+        >
+          <span>קטגוריה</span>
+          <span className="w-4 h-4 rounded-full bg-gray-700 text-xs text-gray-300 flex items-center justify-center hover:bg-gray-600">?</span>
+        </button>
+      </div>
+
       {/* Product rows */}
       <div className="space-y-2">
         {products.map((p, idx) => {
@@ -393,14 +479,35 @@ function TabShopping({ onSave }) {
         })}
       </div>
 
-      {/* Add product */}
-      <button
-        onClick={addProduct}
-        className="w-full border border-dashed border-gray-700 rounded-2xl py-3 text-gray-500 text-sm flex items-center justify-center gap-2 active:scale-95 transition-all hover:border-gray-600 hover:text-gray-400"
-      >
-        <Plus className="w-4 h-4" />
-        הוסף מוצר
-      </button>
+      {/* Add product + Scan receipt */}
+      <div className="flex gap-2">
+        <button
+          onClick={addProduct}
+          className="flex-1 border border-dashed border-gray-700 rounded-2xl py-3 text-gray-500 text-sm flex items-center justify-center gap-2 active:scale-95 transition-all hover:border-gray-600 hover:text-gray-400"
+        >
+          <Plus className="w-4 h-4" />
+          הוסף מוצר
+        </button>
+
+        {/* hidden camera input */}
+        <input
+          ref={cameraInputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          className="hidden"
+          onChange={handleReceiptScan}
+        />
+
+        <button
+          type="button"
+          onClick={() => cameraInputRef.current?.click()}
+          className="flex items-center gap-2 bg-blue-700 hover:bg-blue-600 active:scale-95 transition-all px-4 py-3 rounded-xl text-sm font-semibold"
+        >
+          <Camera className="w-4 h-4" />
+          סרוק קבלה
+        </button>
+      </div>
 
       {/* Error */}
       {error && (
@@ -420,6 +527,76 @@ function TabShopping({ onSave }) {
         <ShoppingCart className="w-4 h-4" />
         שמור קנייה
       </PrimaryButton>
+
+      {/* Toast notification */}
+      {toast && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-gray-800 border border-gray-700 text-white text-sm px-5 py-3 rounded-2xl shadow-xl z-50 whitespace-nowrap">
+          {toast}
+        </div>
+      )}
+
+      {/* Scanning overlay */}
+      {scanning && (
+        <div className="fixed inset-0 bg-black/80 z-50 flex flex-col items-center justify-center gap-4">
+          <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
+          <p className="text-white font-semibold text-lg">מנתח קבלה...</p>
+          <p className="text-gray-400 text-sm">אנא המתן</p>
+        </div>
+      )}
+
+      {/* Category help modal */}
+      {showCategoryHelp && (
+        <div
+          className="fixed inset-0 bg-black/70 z-50 flex items-end justify-center"
+          onClick={() => setShowCategoryHelp(false)}
+        >
+          <div
+            className="bg-gray-900 border border-gray-700/50 rounded-t-3xl w-full max-w-md p-6 pb-10"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="w-10 h-1 bg-gray-700 rounded-full mx-auto mb-5" />
+            <h3 className="text-lg font-bold mb-4">מה כל קטגוריה אומרת?</h3>
+
+            <div className="space-y-4">
+              <div className="bg-green-950/50 border border-green-800/50 rounded-xl p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="w-3 h-3 rounded-full bg-green-500 inline-block" />
+                  <span className="font-semibold text-green-400">בסיס</span>
+                </div>
+                <p className="text-sm text-gray-300">מוצרים שחייבים לקנות כל שבוע</p>
+                <p className="text-xs text-gray-500 mt-1">חלב, לחם, ביצים, ירקות, פירות, אורז, פסטה, קמח, סוכר, מלח, שמן, מים, חמאה, גבינה, יוגורט</p>
+              </div>
+
+              <div className="bg-orange-950/50 border border-orange-800/50 rounded-xl p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="w-3 h-3 rounded-full bg-orange-500 inline-block" />
+                  <span className="font-semibold text-orange-400">נוחות</span>
+                </div>
+                <p className="text-sm text-gray-300">מוצרים שנוח אבל לא חייב</p>
+                <p className="text-xs text-gray-500 mt-1">שוקולד, חטיפים, גלידה, אוכל מוכן, קוקה קולה, מיצים, ביסלי, במבה, קפה, תה</p>
+              </div>
+
+              <div className="bg-red-950/50 border border-red-800/50 rounded-xl p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="w-3 h-3 rounded-full bg-red-500 inline-block" />
+                  <span className="font-semibold text-red-400">מותרות</span>
+                </div>
+                <p className="text-sm text-gray-300">מוצרים יקרים / לפינוק</p>
+                <p className="text-xs text-gray-500 mt-1">יין, בירה, אלכוהול, סושי, נקניקים יקרים, גבינות מיוחדות</p>
+              </div>
+
+              <p className="text-xs text-gray-600 text-center">הסיווג נעשה אוטומטית לפי שם המוצר — תוכל לשנות ידנית</p>
+            </div>
+
+            <button
+              onClick={() => setShowCategoryHelp(false)}
+              className="w-full mt-5 bg-gray-800 py-3 rounded-xl font-semibold text-sm active:scale-95"
+            >
+              הבנתי
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -640,6 +817,52 @@ function TabAnalysis({ trips, monthlyBudget, onBudgetChange }) {
       {thisMonthTrips.length === 0 && (
         <EmptyState icon={TrendingDown} title="אין נתונים לחודש זה" subtitle="הוסף קניות כדי לראות ניתוח" />
       )}
+
+      {/* Notification settings */}
+      <NotificationCard />
+    </div>
+  )
+}
+
+// ─── Notification Card ────────────────────────────────────────────────────────
+function NotificationCard() {
+  const [notifEnabled, setNotifEnabled] = useState(() =>
+    localStorage.getItem('notifications_enabled') === 'true'
+  )
+
+  async function handleNotifToggle() {
+    if (notifEnabled) {
+      cancelDailyReminder()
+      setNotifEnabled(false)
+      localStorage.setItem('notifications_enabled', 'false')
+    } else {
+      const granted = await requestNotificationPermission()
+      if (granted) {
+        const scheduled = await scheduleDailyReminder()
+        if (scheduled) {
+          setNotifEnabled(true)
+          localStorage.setItem('notifications_enabled', 'true')
+        }
+      } else {
+        alert('לא ניתנה הרשאה להתראות. אנא אפשר הרשאות בהגדרות המכשיר.')
+      }
+    }
+  }
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-2xl p-4 mt-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="font-semibold text-sm">תזכורת יומית</p>
+          <p className="text-xs text-gray-500 mt-0.5">כל יום ב-20:00 — הכנסת הוצאות</p>
+        </div>
+        <button
+          onClick={handleNotifToggle}
+          className={`relative w-12 h-6 rounded-full transition-colors ${notifEnabled ? 'bg-blue-600' : 'bg-gray-700'}`}
+        >
+          <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-all ${notifEnabled ? 'right-0.5' : 'left-0.5'}`} />
+        </button>
+      </div>
     </div>
   )
 }
@@ -696,6 +919,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
   }, [state])
+
+  useEffect(() => {
+    checkWebNotificationTime()
+  }, [])
 
   const handleSaveTrip = useCallback((trip) => {
     setState((prev) => ({ ...prev, trips: [trip, ...prev.trips] }))
